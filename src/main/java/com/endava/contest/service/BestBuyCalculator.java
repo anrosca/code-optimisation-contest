@@ -1,13 +1,10 @@
 package com.endava.contest.service;
 
-import org.springframework.stereotype.Service;
-
 import com.endava.contest.domain.BestBuy;
 
-@Service
 public class BestBuyCalculator {
 
-    public BestBuy calculateBestBuy(final double[] stocksPrices, final String batchName) {
+    public static BestBuy calculateBestBuy(final double[] stocksPrices, final String batchName) {
         DoublePair bestPrice = null;
         DoublePair candidate = new DoublePair();
         for (int i = 0; i < stocksPrices.length - 1; ++i) {

@@ -4,40 +4,38 @@ import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-import org.springframework.stereotype.Service;
-
 import com.endava.contest.domain.File;
 
-import lombok.extern.slf4j.Slf4j;
-
-@Slf4j
-@Service
 public class ZipReader {
 
     private static final int BUFFER_CAPACITY = 4096;
 
-    public List<File> readZipArchive(InputStream zipArchive) {
+    private Consumer<File> fileConsumer;
+
+    public void readZipArchive(InputStream zipArchive) {
         try {
-            return tryReadZipArchive(zipArchive);
+            tryReadZipArchive(zipArchive);
         } catch (IOException e) {
-            log.error("Error while reading the zip archive: {}", e);
+            System.out.println("Error while reading the zip archive: " + e);
             throw new RuntimeException(e);
         }
     }
 
-    private static List<File> tryReadZipArchive(InputStream zipArchiveStream) throws IOException {
-        List<File> files = new ArrayList<>(1000);
+    public void registerConsumer(final Consumer<File> fileConsumer) {
+        this.fileConsumer = fileConsumer;
+    }
+
+    private void tryReadZipArchive(InputStream zipArchiveStream) throws IOException {
         try (ZipInputStream zipInputStream = new ZipInputStream(new BufferedInputStream(zipArchiveStream))) {
             ZipEntry entry;
             while ((entry = zipInputStream.getNextEntry()) != null) {
-                files.add(readFileFrom(zipInputStream, entry.getName()));
+                fileConsumer.accept(readFileFrom(zipInputStream, entry.getName()));
             }
-            return files;
+            fileConsumer.accept(null);
         }
     }
 

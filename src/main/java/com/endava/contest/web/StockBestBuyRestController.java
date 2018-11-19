@@ -12,14 +12,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.endava.contest.service.TradingFacade;
 
-import lombok.AllArgsConstructor;
-
 @RestController
 @RequestMapping("/stockExchange")
-@AllArgsConstructor
 public class StockBestBuyRestController {
-
-    private final TradingFacade tradingFacade;
 
     @PostMapping
     public ResponseEntity handle(@RequestParam("file") MultipartFile multipartFile) throws IOException {
@@ -29,6 +24,10 @@ public class StockBestBuyRestController {
         }
         InputStream inputStream = multipartFile.getInputStream();
         return ResponseEntity.ok()
-                .body(tradingFacade.makeBestBuysResponse(tradingFacade.getBestBuysFor(inputStream)));
+                .body(getTradingFacade().getBestBuysFor(inputStream));
+    }
+
+    private TradingFacade getTradingFacade() {
+        return new TradingFacade();
     }
 }

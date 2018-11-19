@@ -1,71 +1,130 @@
 package com.endava.contest.service;
 
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.List;
-
-import org.json.JSONObject;
-import org.springframework.stereotype.Service;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import com.endava.contest.domain.BestBuy;
 import com.endava.contest.domain.File;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import lombok.AllArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+public class TradingFacade implements Consumer<File> {
 
-@Service
-@AllArgsConstructor
-@Slf4j
-public class TradingFacade {
+    private final ZipReader zipReader = new ZipReader();
 
-    private final ZipReader zipReader;
+    private final AtomicLong taskIdGenerator = new AtomicLong();
 
-    private final QRCodeReader qrCodeReader;
+    private final BlockingQueue<BestBuyCalculateTask> submittedTasksQueue = new LinkedBlockingQueue<>();
 
-    private final StockParser stockParser;
+    private volatile boolean isDone = false;
 
-    private final BestBuyCalculator bestBuyCalculator;
-
-    public List<BestBuy> getBestBuysFor(InputStream zipArchive) {
-        List<File> files = zipReader.readZipArchive(zipArchive);
-        List<BestBuy> bestBuys = new ArrayList<>(1000);
-        for (File file : files) {
-            processImageFile(bestBuys, file);
-        }
-        return bestBuys;
+    public String getBestBuysFor(InputStream zipArchive) {
+        zipReader.registerConsumer(this);
+        zipReader.readZipArchive(zipArchive);
+        BestBuyCalculateTask[] finishedTasks = spinUntilAllTasksAreDone();
+        Arrays.sort(finishedTasks, Comparator.comparingLong(bestBuyCalculateTask -> bestBuyCalculateTask.id));
+        return makeBestBuysResponse(finishedTasks);
     }
 
-    private void processImageFile(final List<BestBuy> bestBuys, final File file) {
+    private BestBuyCalculateTask[] spinUntilAllTasksAreDone() {
+        while (!isDone) {
+            Thread.yield();
+        }
+        int totalTasks = (int) taskIdGenerator.get();
+        BestBuyCalculateTask[] finishedTasks = new BestBuyCalculateTask[totalTasks];
+        int finishedTasksIndex = 0;
+        for (int i = 0; i < totalTasks; ++i) {
+            BestBuyCalculateTask queueElement = getQueueElement();
+            if (queueElement != null)
+                finishedTasks[finishedTasksIndex++] = queueElement;
+        }
+        return finishedTasks;
+    }
+
+    private BestBuyCalculateTask getQueueElement() {
         try {
-            tryProcessImageFile(bestBuys, file);
-        } catch (Exception e) {
-            //skipping file
+            return submittedTasksQueue.take();
+        } catch (InterruptedException e) {
+            return null;
         }
     }
 
-    private void tryProcessImageFile(final List<BestBuy> bestBuys, final File file) {
-        String imageContent = qrCodeReader.decodeQRCode(file.getContentStream());
-        double[] stocksPrices = stockParser.getStocks(imageContent);
-        if (stocksPrices.length != 0) {
-            addIfNotNull(bestBuys, bestBuyCalculator.calculateBestBuy(stocksPrices, file.getFileName()));
+    private String makeBestBuysResponse(final BestBuyCalculateTask[] results) {
+        StringBuilder jsonResult = new StringBuilder(50_000);
+        ObjectNode objectNode = JsonNodeFactory.instance.objectNode();
+        for (BestBuyCalculateTask task : results) {
+            BestBuy bestBuy = task.getResult();
+            if (bestBuy != null) {
+                objectNode.set(bestBuy.getBatchName(), JsonNodeFactory.instance.objectNode()
+                        .put("buyPoint", bestBuy.getBuyPoint().toString())
+                        .put("sellPoint", bestBuy.getSellPoint().toString()));
+            }
         }
-    }
-
-    private void addIfNotNull(final List<BestBuy> bestBuys, final BestBuy bestBuy) {
-        if (bestBuy != null) {
-            bestBuys.add(bestBuy);
-        }
-    }
-
-    public String makeBestBuysResponse(List<BestBuy> bestBuys) {
-        StringBuilder jsonResult = new StringBuilder();
-        JSONObject jsonObject = new JSONObject();
-        for (BestBuy bestBuy : bestBuys) {
-            jsonObject.put(bestBuy.getBatchName(), new JSONObject()
-                    .put("buyPoint", bestBuy.getBuyPoint().toString())
-                    .put("sellPoint", bestBuy.getSellPoint().toString()));
-        }
-        jsonResult.append(jsonObject);
+        jsonResult.append(objectNode.toString());
         return jsonResult.toString();
+    }
+
+    @Override
+    public void accept(final File file) {
+        if (file == null) {
+            isDone = true;
+        } else {
+            ForkJoinPool forkJoinPool = ForkJoinPool.commonPool();
+            forkJoinPool.submit(new BestBuyCalculateTask(taskIdGenerator.incrementAndGet(), file));
+        }
+    }
+
+    private class BestBuyCalculateTask implements Runnable {
+
+        private final long id;
+
+        private final File file;
+
+        private volatile BestBuy result;
+
+        public BestBuyCalculateTask(final long id, final File file) {
+            this.id = id;
+            this.file = file;
+        }
+
+        public long getId() {
+            return id;
+        }
+
+        public boolean isDone() {
+            return result != null;
+        }
+
+        public BestBuy getResult() {
+            return result;
+        }
+
+        @Override
+        public void run() {
+            processImageFile(file);
+        }
+
+        private void processImageFile(final File file) {
+            try {
+                tryProcessImageFile(file);
+            } catch (Exception e) {
+                //skipping file
+            }
+        }
+
+        private void tryProcessImageFile(final File file) {
+            String imageContent = QRCodeReader.decodeQRCode(file.getContentStream());
+            double[] stocksPrices = StockParser.getStocks(imageContent);
+            if (stocksPrices.length != 0) {
+                result = BestBuyCalculator.calculateBestBuy(stocksPrices, file.getFileName());
+                submittedTasksQueue.add(this);
+            }
+        }
     }
 }
